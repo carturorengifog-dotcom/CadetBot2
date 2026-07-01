@@ -13,7 +13,7 @@ DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
 GITHUB_USERNAME = os.environ.get("GITHUB_USERNAME")
-FILE_PATH = "bot.py" # El archivo de tu bot de Telegram que modificará la IA
+FILE_PATH = "bot.py"  # El archivo de tu bot de Telegram que modificará la IA
 
 # Función para obtener el código actual de bot.py directamente desde GitHub
 def obtener_codigo_actual_github():
@@ -70,6 +70,14 @@ def subir_codigo_a_github(nuevo_codigo, instruccion):
     except Exception:
         return False
 
+# Función para extraer código de un bloque markdown
+def extraer_codigo_del_bloque(respuesta_texto):
+    patron = r"```python\n(.*?)\n```"
+    match = re.search(patron, respuesta_texto, re.DOTALL)
+    if match:
+        return match.group(1)
+    return None
+
 # Inicializar el historial de mensajes de chat en la sesión
 if "messages" not in st.session_state:
     st.session_state.messages = [
@@ -92,8 +100,11 @@ if user_input := st.chat_input("Escribe tu instrucción de modificación aquí..
     with st.chat_message("assistant"):
         with st.spinner("Leyendo repositorio y analizando con DeepSeek..."):
             
-            if not DEEPSEEK_API_KEY or not GITHUB_TOKEN:
-                st.error("Asegúrate de tener DEEPSEEK_API_KEY y GITHUB_TOKEN configurados en Railway.")
+            # Verificar que todas las variables de entorno estén configuradas
+            if not all([DEEPSEEK_API_KEY, GITHUB_TOKEN, GITHUB_REPO, GITHUB_USERNAME]):
+                error_msg = "❌ Faltan variables de entorno en Railway. Asegúrate de tener: DEEPSEEK_API_KEY, GITHUB_TOKEN, GITHUB_REPO, GITHUB_USERNAME"
+                st.error(error_msg)
+                st.session_state.messages.append({"role": "assistant", "content": error_msg})
             else:
                 try:
                     # 1. Obtener el código actual de bot.py desde GitHub
@@ -106,6 +117,7 @@ if user_input := st.chat_input("Escribe tu instrucción de modificación aquí..
                         "Content-Type": "application/json"
                     }
                     
+                    # CORREGIDO: Aquí estaba el error de la f-string
                     payload_ds = {
                         "model": "deepseek-chat",
                         "messages": [
@@ -115,4 +127,77 @@ if user_input := st.chat_input("Escribe tu instrucción de modificación aquí..
                             },
                             {
                                 "role": "user", 
-                                "content": f"Código Original en GitHub:\n
+                                "content": f"Código Original en GitHub:\n{codigo_actual}\n\nInstrucción del usuario: {user_input}"
+                            }
+                        ]
+                    }
+                    
+                    # 3. Hacer la llamada a DeepSeek
+                    response_ds = requests.post(url_ds, json=payload_ds, headers=headers_ds)
+                    
+                    if response_ds.status_code == 200:
+                        respuesta_json = response_ds.json()
+                        respuesta_completa = respuesta_json["choices"][0]["message"]["content"]
+                        
+                        # 4. Extraer el código modificado del bloque markdown
+                        codigo_modificado = extraer_codigo_del_bloque(respuesta_completa)
+                        
+                        if codigo_modificado:
+                            # 5. Subir el código modificado a GitHub
+                            if subir_codigo_a_github(codigo_modificado, user_input):
+                                mensaje_exito = "✅ **Código actualizado en GitHub exitosamente!**\n\nEl bot de Telegram se actualizará en breve."
+                                st.success(mensaje_exito)
+                                st.session_state.messages.append({"role": "assistant", "content": mensaje_exito})
+                                
+                                # Mostrar el código modificado (opcional)
+                                with st.expander("📄 Ver código modificado"):
+                                    st.code(codigo_modificado, language="python")
+                            else:
+                                error_msg = "❌ Error al subir el código a GitHub. Verifica los permisos del token."
+                                st.error(error_msg)
+                                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                        else:
+                            error_msg = "⚠️ No se encontró un bloque de código en la respuesta de DeepSeek. La IA no generó código válido."
+                            st.warning(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            
+                            # Mostrar la respuesta completa para depuración
+                            with st.expander("🔍 Ver respuesta completa de DeepSeek"):
+                                st.text(respuesta_completa)
+                    else:
+                        error_msg = f"❌ Error al comunicarse con DeepSeek. Código: {response_ds.status_code}\n{response_ds.text}"
+                        st.error(error_msg)
+                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                        
+                except Exception as e:
+                    error_msg = f"❌ Error inesperado: {str(e)}"
+                    st.error(error_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
+
+# Sidebar con información
+with st.sidebar:
+    st.header("📊 Estado del Sistema")
+    
+    # Mostrar estado de las variables de entorno
+    st.subheader("🔑 Configuración")
+    st.write(f"• GitHub Repo: {'✅' if GITHUB_REPO else '❌'}")
+    st.write(f"• GitHub User: {'✅' if GITHUB_USERNAME else '❌'}")
+    st.write(f"• GitHub Token: {'✅' if GITHUB_TOKEN else '❌'}")
+    st.write(f"• DeepSeek API: {'✅' if DEEPSEEK_API_KEY else '❌'}")
+    
+    # Mostrar SHA del archivo si existe
+    if "file_sha" in st.session_state and st.session_state.file_sha:
+        st.write(f"• Archivo SHA: `{st.session_state.file_sha[:8]}...`")
+    
+    # Botón para ver el código actual
+    if st.button("📖 Ver código actual"):
+        with st.spinner("Cargando código..."):
+            codigo = obtener_codigo_actual_github()
+            st.code(codigo, language="python")
+    
+    # Botón para limpiar el chat
+    if st.button("🗑️ Limpiar chat"):
+        st.session_state.messages = [
+            {"role": "assistant", "content": "🧹 Chat limpiado. ¿En qué más puedo ayudarte Arturo?"}
+        ]
+        st.rerun()
